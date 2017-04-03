@@ -82,8 +82,8 @@ typedef struct conn_t
 } conn_t;
 
 /* prototypes */
-int conn_init(void);
-void conn_loop(void);
+int conn_init(char *exename);
+void conn_loop(char *exename);
 void conn_open(void);
 conn_t *conn_close(conn_t *conn);
 

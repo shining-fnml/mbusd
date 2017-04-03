@@ -59,4 +59,5 @@ cfg_init(void)
   cfg.respwait = DEFAULT_RESPWAIT;
   cfg.resppause = DV(3, cfg.ttyspeed);
   cfg.conntimeout = DEFAULT_CONNTIMEOUT;
+  cfg.exclusion = NULL;
 }

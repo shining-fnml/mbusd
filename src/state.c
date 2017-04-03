@@ -115,6 +115,8 @@ state_conn_set(conn_t *conn, int state)
 void
 state_tty_set(ttydata_t *mod, int state)
 {
+  unsigned char slave = mod->txbuf[0];
+
   switch (state)
   {
     case TTY_PAUSE:
@@ -139,7 +141,7 @@ state_tty_set(ttydata_t *mod, int state)
       logw(5, "tty: state now is TTY_RQST");
 #endif
 #ifndef NOSILENT
-      tty_delay(DV(2, cfg.ttyspeed));
+      tty_delay(DV(2, mod->param[slave]->speed));
 #endif
       break;
     case TTY_RESP:
@@ -147,7 +149,7 @@ state_tty_set(ttydata_t *mod, int state)
       mod->rxoffset = 0;
       /* XXX need real recv length? */
       mod->rxlen = TTY_BUFSIZE;
-      mod->timer = cfg.respwait * 1000l + DV(mod->txlen, mod->speed);
+      mod->timer = cfg.respwait * 1000l + DV(mod->txlen, mod->param[slave]->speed);
 #ifdef DEBUG
       logw(5, "tty: state now is TTY_RESP");
 #endif

@@ -72,6 +72,8 @@ typedef struct
   unsigned long respwait;
   /* inter-byte response pause (in usec) */
   unsigned long resppause;
+  /* settings other than defaults for specific slaves */
+  FILE *exclusion;
 } cfg_t;
 
 /* Prototypes */

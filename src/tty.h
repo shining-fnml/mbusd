@@ -85,17 +85,25 @@
 /*
  * TTY related data storage structure
  */
+typedef struct ttyparam_s
+{
+  int speed;                    /* serial port speed */
+  struct termios tios;          /* working termios structure */
+  char mode[4];			/* bits, parity, stop and string terminator */
+  struct ttyparam_s *next;      /* pointer to next ring of the chain */
+} ttyparam_t;
+
 typedef struct
 {
   int fd;                       /* tty file descriptor */
-  int speed;                    /* serial port speed */
   char *port;                   /* serial port device name */
 #ifdef TRXCTL
   int trxcntl;                  /* trx control type (enum - see values in config.h) */
 #endif
-  struct termios tios;          /* working termios structure */
   struct termios savedtios;     /* saved termios structure */
   int state;                    /* current state */
+  ttyparam_t *param[256];       /* serial parameters for all possible slaves */
+  struct termios *curslave;	/* the slave currently in use */
   unsigned int trynum;             /* try counter */
   unsigned long timer;          /* time tracking variable */
   unsigned int txlen;           /* tx data length */
@@ -109,11 +117,11 @@ typedef struct
 /* prototypes */
 void tty_sighup(void);
 #ifdef TRXCTL
-void tty_init(ttydata_t *mod, char *port, int speed, int trxcntl);
+void tty_init(ttydata_t *mod, char *port, int trxcntl);
 #else
-void tty_init(ttydata_t *mod, char *port, int speed);
+void tty_init(ttydata_t *mod, char *port);
 #endif
-int tty_open(ttydata_t *mod);
+int tty_open(char *exename, ttydata_t *mod);
 int tty_set_attr(ttydata_t *mod);
 speed_t tty_transpeed(int speed);
 int tty_cooked(ttydata_t *mod);
@@ -121,5 +129,7 @@ int tty_close(ttydata_t *mod);
 void tty_set_rts(int fd);
 void tty_clr_rts(int fd);
 void tty_delay(int usec);
+int tty_alt_config(char *exename, ttydata_t *mod);
+int tty_mode_validate(char *exename, char *ttymode);
 
 #endif /* _TTY_H */

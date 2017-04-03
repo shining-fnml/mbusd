@@ -67,6 +67,8 @@ Usage:
               Specifies serial port speed.
        -m mode
               Specifies serial port mode (like 8N1).
+       -x file
+              Allow some slaves to use different serial setting than those given on the command line.
        -P port
               Specifies TCP port number (default 502).
        -C maxconn
@@ -115,6 +117,9 @@ Andrew Denysenko (<nitr0@seti.kr.ua>):
 
 James Jarvis (<jj@aprsworld.com>):
  - file based RS-485 data direction control
+
+Shining (<shining@linuxcondom.net>):
+ - slave serial settings exclusion
 
 License:
 --------

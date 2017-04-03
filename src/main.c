@@ -47,12 +47,14 @@
 extern char logfullname[];
 int isdaemon = TRUE;
 
-void usage(char *exename);
+static void usage(char *exename);
 
 /* Server socket */
 int server_sd = -1;
 /* TTY related data storage variable */
 ttydata_t tty;
+/* Per slaves TTY serial parameters */
+ttyparam_t *ttyparam;
 /* Connections queue descriptor */
 queue_t queue;
 
@@ -64,7 +66,7 @@ queue_t queue;
  * Original source file CVS tag:
  * $FreeBSD: src/lib/libc/gen/daemon.c,v 1.3 2000/01/27 23:06:14 jasone Exp $
  */
-int
+static int
 daemon(nochdir, noclose)
   int nochdir, noclose;
 {
@@ -96,7 +98,7 @@ daemon(nochdir, noclose)
 }
 #endif
 
-void
+static void
 usage(char *exename)
 {
   cfg_init();
@@ -128,6 +130,7 @@ usage(char *exename)
    "  -p device  : set serial port device name (default %s)\n"
    "  -s speed   : set serial port speed (default %d)\n"
    "  -m mode    : set serial port mode (default %s)\n"
+   "  -x file    : exclude some slaves from the command line settings\n"
    "  -P port    : set TCP server port number (default %d)\n"
    "  -C maxconn : set maximum number of simultaneous TCP connections\n"
    "               (1-128, default %d)\n"
@@ -153,10 +156,10 @@ main(int argc, char *argv[])
 {
   int err = 0, rc;
   char *exename;
-  char ttyparity;
 
   sig_init();
   cfg_init();
+  ttyparam = NULL;
 
   if ((exename = strrchr(argv[0], '/')) == NULL)
     exename = argv[0];
@@ -172,7 +175,7 @@ main(int argc, char *argv[])
 #ifdef LOG
                "v:L:"
 #endif
-               "p:s:m:P:C:N:R:W:T:")) != RC_ERR)
+               "p:s:m:x:P:C:N:R:W:T:")) != RC_ERR)
   {
     switch (rc)
     {
@@ -243,34 +246,10 @@ main(int argc, char *argv[])
         cfg.ttyspeed = strtoul(optarg, NULL, 0);
         break;
       case 'm':
-	cfg.ttymode = optarg;
-	/* tty mode sanity checks */
-	if (strlen(cfg.ttymode) != 3)
-	{
-	  printf("%s: -m: invalid serial port mode ('%s')\n", exename, cfg.ttymode);
-	  exit(-1);
-	}
-	if (cfg.ttymode[0] != '8')
-	{
-	  printf("%s: -m: invalid serial port character size "
-	      "(%c, must be 8)\n",
-	      exename, cfg.ttymode[0]);
-	  exit(-1);
-	}
-	ttyparity = toupper(cfg.ttymode[1]);
-	if (ttyparity != 'N' && ttyparity != 'E' && ttyparity != 'O')
-	{
-	  printf("%s: -m: invalid serial port parity "
-	      "(%c, must be N, E or O)\n", exename, ttyparity);
-	  exit(-1);
-	}
-	if (cfg.ttymode[2] != '1' && cfg.ttymode[2] != '2')
-	{
-	  printf("%s: -m: invalid serial port stop bits "
-	      "(%c, must be 1 or 2)\n", exename, cfg.ttymode[2]);
-	  exit(-1);
-	}
-	break;
+        cfg.ttymode = optarg;
+        if (tty_mode_validate(exename, cfg.ttymode)!=RC_OK)
+          return EXIT_FAILURE;
+        break;
       case 'P':
         cfg.serverport = strtoul(optarg, NULL, 0);
         break;
@@ -322,6 +301,14 @@ main(int argc, char *argv[])
       case 'h':
         usage(exename);
         break;
+      case 'x':
+        if ((cfg.exclusion=fopen(optarg, "r")) == NULL)
+        { /* report about missing on unreadable exclusion table */
+          printf("%s: -x: cannot open %s for reading\n",
+                 exename, optarg);
+          return EXIT_FAILURE;
+        }
+        break;
     }
   }
 
@@ -337,7 +324,7 @@ main(int argc, char *argv[])
   logw(2, "%s-%s started...", PACKAGE, VERSION);
 #endif
 
-  if (conn_init())
+  if (conn_init(exename))
   {
 #ifdef LOG
     err = errno;
@@ -355,7 +342,7 @@ main(int argc, char *argv[])
     exit(rc);
   }
 
-  conn_loop();
+  conn_loop(exename);
   err = errno;
 #ifdef LOG
   logw(2, "%s-%s exited...", PACKAGE, VERSION);

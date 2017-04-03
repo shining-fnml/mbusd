@@ -34,6 +34,7 @@
 #include "tty.h"
 
 extern cfg_t cfg;
+extern ttyparam_t *ttyparam;
 
 static int tty_break;
 
@@ -52,23 +53,127 @@ tty_sighup(void)
  */
 void
 #ifdef  TRXCTL
-tty_init(ttydata_t *mod, char *port, int speed, int trxcntl)
+tty_init(ttydata_t *mod, char *port, int trxcntl)
 #else
-tty_init(ttydata_t *mod, char *port, int speed)
+tty_init(ttydata_t *mod, char *port)
 #endif
 {
   mod->fd = -1;
   mod->port = port;
-  mod->speed = speed;
 #ifdef  TRXCTL
   mod->trxcntl = trxcntl;
 #endif
 }
 
-#ifdef HAVE_LIBUTIL
-char *tty_get_name(char *ttyfullname);
+static void
+tty_set_mode_speed(ttyparam_t *param, char *ttymode, int ttyspeed)
+{
+  speed_t tspeed = tty_transpeed(ttyspeed);
 
-char *
+  param->speed = ttyspeed;
+  strncpy(param->mode, ttymode, 4);
+
+  switch (ttymode[1])
+  {
+    case 'E':
+      param->tios.c_cflag |= PARENB;
+      break;
+    case 'N':
+      param->tios.c_cflag &= ~PARENB;
+      break;
+    case 'O':
+      param->tios.c_cflag |= (PARENB | PARODD);
+      break;
+  }
+  if (ttymode[2] == '2')
+      param->tios.c_cflag |= CSTOPB;
+  else
+      param->tios.c_cflag &= ~CSTOPB;
+  param->tios.c_cc[VTIME] = 0;
+  param->tios.c_cc[VMIN] = 1;
+#ifdef HAVE_CFSETSPEED
+  cfsetspeed(&param->tios, tspeed);
+#else
+  cfsetispeed(&param->tios, tspeed);
+  cfsetospeed(&param->tios, tspeed);
+#endif
+}
+
+int
+tty_alt_config(char *exename, ttydata_t *mod)
+{
+  int iter, slave, speed;
+  char mode[4];
+  ttyparam_t *known;
+
+  ttyparam = (ttyparam_t *) calloc(1, sizeof(ttyparam_t));
+  memset(&mod->savedtios, 0, sizeof(struct termios));
+  if (tcgetattr(mod->fd, &mod->savedtios)) {
+#ifdef LOG
+    logw(3, "%s(): can't get current device termios", __FUNCTION__);
+#endif
+    return RC_ERR;
+  }
+  memcpy(&ttyparam->tios, &mod->savedtios, sizeof(struct termios));
+#ifdef HAVE_CFMAKERAW
+  cfmakeraw(&ttyparam->tios);
+#else
+  ttyparam->tios.c_iflag &= ~(IGNBRK | BRKINT | PARMRK | ISTRIP | INLCR | IGNCR | ICRNL | IXON);
+  ttyparam->tios.c_oflag &= ~OPOST;
+  ttyparam->tios.c_lflag &= ~(ECHO | ECHONL | ICANON | ISIG | IEXTEN);
+  ttyparam->tios.c_cflag |= CREAD | CLOCAL ;
+#endif
+  ttyparam->tios.c_cflag &= ~(CSIZE | CSTOPB | PARENB | PARODD | CRTSCTS);
+  ttyparam->tios.c_cflag |= CS8;
+  tty_set_mode_speed(ttyparam, cfg.ttymode, cfg.ttyspeed);
+
+  for (iter=0; iter<256; iter++)
+    mod->param[iter] = ttyparam;
+  mod->curslave = &ttyparam->tios;
+  if (cfg.exclusion==NULL) {
+#ifdef LOG
+    logw(3, "%s(): no exclusion file defined", __FUNCTION__);
+#endif
+    return RC_OK;
+  }
+  while ((iter=fscanf(cfg.exclusion,"%d %d %3s", &slave, &speed, mode)) == 3)
+  {
+#ifdef LOG
+    logw(5, "%s(): %d fields converted", __FUNCTION__, iter);
+#endif
+    if (tty_mode_validate(exename, mode) != RC_OK)
+      return RC_ERR;
+    for (known=ttyparam; known!=NULL; known=known->next)
+      if (speed == known->speed && !strcmp(mode,known->mode))
+        break;
+    if (known!=NULL) {
+      mod->param[slave] = known;
+      continue;
+    }
+    known = (ttyparam_t *) calloc(1, sizeof(ttyparam_t));
+    memcpy(&known->tios, &ttyparam->tios, sizeof(struct termios));
+    tty_set_mode_speed(known, mode, speed);
+    known->next = ttyparam;
+    ttyparam = known;
+    mod->param[slave] = known;
+#ifdef LOG
+    logw(5, "%s(): alternative configuration allocated", __FUNCTION__, iter);
+#endif
+  }
+  if (!feof(cfg.exclusion)) {
+#ifdef LOG
+      logw(3, "%s(): Error processing exclusion file. %d fields converted", __FUNCTION__, iter);
+#endif
+      return RC_ERR;
+  }
+  fclose(cfg.exclusion);
+  return RC_OK;
+}
+
+#ifdef HAVE_LIBUTIL
+static char *tty_get_name(char *ttyfullname);
+
+static char *
 tty_get_name(char *ttyfullname)
 {
   static char ttynamebuf[INTBUFSIZE + 1];
@@ -84,12 +189,44 @@ tty_get_name(char *ttyfullname)
 }
 #endif
 
+int
+tty_mode_validate(char *exename, char *ttymode)
+{
+  /* tty mode sanity checks */
+  if (strlen(ttymode) != 3)
+  {
+    printf("%s: -m: invalid serial port mode ('%s')\n", exename, ttymode);
+    return RC_ERR;
+  }
+  if (ttymode[0] != '8')
+  {
+    printf("%s: -m: invalid serial port character size "
+        "(%c, must be 8)\n",
+        exename, ttymode[0]);
+    return RC_ERR;
+  }
+  ttymode[1] = toupper(ttymode[1]);
+  if (ttymode[1] != 'N' && ttymode[1] != 'E' && ttymode[1] != 'O')
+  {
+    printf("%s: -m: invalid serial port parity "
+        "(%c, must be N, E or O)\n", exename, ttymode[1]);
+    return RC_ERR;
+  }
+  if (ttymode[2] != '1' && ttymode[2] != '2')
+  {
+    printf("%s: -m: invalid serial port stop bits "
+        "(%c, must be 1 or 2)\n", exename, ttymode[2]);
+    return RC_ERR;
+  }
+  return RC_OK;
+}
+
 
 /*
  * Opening serial link whith parameters in MOD
  */
 int
-tty_open(ttydata_t *mod)
+tty_open(char *exename, ttydata_t *mod)
 {
 #ifdef HAVE_LIBUTIL
   int buferr, uuerr;
@@ -113,6 +250,14 @@ tty_open(ttydata_t *mod)
   mod->fd = open(mod->port, O_RDWR | O_NONBLOCK | O_NOCTTY);
   if (mod->fd < 0)
     return RC_ERR;          /* attempt failed */
+  if (mod->curslave==NULL && tty_alt_config(exename, mod) != RC_OK)
+  {
+#ifdef LOG
+    logw(0, "conn_init():"
+           " can't configure device %s", cfg.ttyport);
+#endif
+    return RC_ERR;
+  }
   return tty_set_attr(mod);
 }
 
@@ -123,58 +268,8 @@ int
 tty_set_attr(ttydata_t *mod)
 {
   int flag;
-  speed_t tspeed = tty_transpeed(mod->speed);
 
-  memset(&mod->savedtios, 0, sizeof(struct termios));
-  if (tcgetattr(mod->fd, &mod->savedtios))
-    return RC_ERR;
-  memcpy(&mod->tios, &mod->savedtios, sizeof(mod->tios));
-#ifdef HAVE_CFMAKERAW
-  cfmakeraw(&mod->tios);
-#else
-  mod->tios.c_iflag &= ~(IGNBRK | BRKINT | PARMRK | ISTRIP | INLCR | IGNCR | ICRNL | IXON);
-  mod->tios.c_oflag &= ~OPOST;
-  mod->tios.c_lflag &= ~(ECHO | ECHONL | ICANON | ISIG | IEXTEN);
-  mod->tios.c_cflag |= CREAD | CLOCAL ;
-#endif
-  mod->tios.c_cflag &= ~(CSIZE | CSTOPB | PARENB | PARODD | CRTSCTS);
-  switch (cfg.ttymode[0])
-  {
-    case '5':
-      mod->tios.c_cflag |= CS5;
-      break;
-    case '6':
-      mod->tios.c_cflag |= CS6;
-      break;
-    case '7':
-      mod->tios.c_cflag |= CS7;
-      break;
-    case '8':
-      mod->tios.c_cflag |= CS8;
-      break;
-  }
-  switch (toupper(cfg.ttymode[1]))
-  {
-    case 'E':
-      mod->tios.c_cflag |= PARENB;
-      break;
-    case 'O':
-      mod->tios.c_cflag |= (PARENB | PARODD);
-      break;
-  }
-  if (cfg.ttymode[2] == '2')
-  {
-      mod->tios.c_cflag |= CSTOPB;
-  }
-  mod->tios.c_cc[VTIME] = 0;
-  mod->tios.c_cc[VMIN] = 1;
-#ifdef HAVE_CFSETSPEED
-  cfsetspeed(&mod->tios, tspeed);
-#else
-  cfsetispeed(&mod->tios, tspeed);
-  cfsetospeed(&mod->tios, tspeed);
-#endif
-  if (tcsetattr(mod->fd, TCSANOW, &mod->tios))
+  if (tcsetattr(mod->fd, TCSANOW, mod->curslave))
     return RC_ERR;
   tcflush(mod->fd, TCIOFLUSH);
 #ifdef  TRXCTL

@@ -40,6 +40,7 @@
 extern int server_sd;
 extern queue_t queue;
 extern ttydata_t tty;
+extern ttyparam_t *ttyparam;
 extern cfg_t cfg;
 
 conn_t *actconn; /* last active connection */
@@ -47,27 +48,27 @@ int max_sd; /* major descriptor in the select() sets */
 
 void conn_tty_start(ttydata_t *tty, conn_t *conn);
 ssize_t conn_read(int d, void *buf, size_t nbytes);
-ssize_t conn_write(int d, void *buf, size_t nbytes, int istty);
+static ssize_t conn_write(int d, void *buf, size_t nbytes, int istty);
 int conn_select(int nfds,
                 fd_set *readfds, fd_set *writefds, fd_set *exceptfds,
                 struct timeval *timeout);
 
 #define FD_MSET(d, s) do { FD_SET(d, s); max_sd = MAX(d, max_sd); } while (0);
 
-int tty_reinit()
+int tty_reinit(char *exename)
 {
   logw(3,"closing tty on error...");
   tty_close(&tty);
   logw(3, "tty closed, re-opening...");
 #ifdef  TRXCTL
-  tty_init(&tty, cfg.ttyport, cfg.ttyspeed, cfg.trxcntl);
+  tty_init(&tty, cfg.ttyport, cfg.trxcntl);
 #else
-  tty_init(&tty, cfg.ttyport, cfg.ttyspeed);
+  tty_init(&tty, cfg.ttyport);
 #endif
-  if (tty_open(&tty) != RC_OK)
+  if (tty_open(exename, &tty) != RC_OK)
   {
 #ifdef LOG
-    logw(0, "conn_init():"
+    logw(0, "tty_reinit():"
            " can't open tty device %s (%s)",
            cfg.ttyport, strerror(errno));
 #endif
@@ -79,19 +80,19 @@ int tty_reinit()
 }
 /*
  * Connections startup initialization
- * Parameters: none
+ * Parameters: exename, name of the executable
  * Return: RC_OK in case of success, RC_ERR otherwise
  */
 int
-conn_init(void)
+conn_init(char *exename)
 {
   /* tty device initialization */
 #ifdef  TRXCTL
-  tty_init(&tty, cfg.ttyport, cfg.ttyspeed, cfg.trxcntl);
+  tty_init(&tty, cfg.ttyport, cfg.trxcntl);
 #else
-  tty_init(&tty, cfg.ttyport, cfg.ttyspeed);
+  tty_init(&tty, cfg.ttyport);
 #endif
-  if (tty_open(&tty) != RC_OK)
+  if (tty_open(exename, &tty) != RC_OK)
   {
 #ifdef LOG
     logw(0, "conn_init():"
@@ -239,7 +240,7 @@ conn_read(int d, void *buf, size_t nbytes)
  * Return: number of successfully written bytes,
  *         RC_ERR in case of error.
  */
-ssize_t
+static ssize_t
 conn_write(int d, void *buf, size_t nbytes, int istty)
 {
   int rc;
@@ -307,11 +308,11 @@ conn_select(int nfds, fd_set *readfds, fd_set *writefds, fd_set *exceptfds,
 
 /*
  * Connections serving loop
- * Parameters: none
+ * Parameters: exename, name of the executable
  * Return: none
  */
 void
-conn_loop(void)
+conn_loop(char *exename)
 {
   int rc, max_sd, len, min_timeout;
   unsigned int i;
@@ -320,6 +321,7 @@ conn_loop(void)
   unsigned long tval, tout_sec, tout = 0ul;
   conn_t *curconn = NULL;
   char t[256], v[8];
+  unsigned char destination;
 
   while (TRUE)
   {
@@ -509,7 +511,7 @@ conn_loop(void)
               logw(0, "conn[%s]: state CONN_TTY deadlock.",
                      inet_ntoa(curconn->sockaddr.sin_addr));
 #endif
-              tty_reinit();
+              tty_reinit(exename);
             }
             /* purge connection */
 #ifdef LOG
@@ -532,19 +534,38 @@ conn_loop(void)
     if (tty.state == TTY_RQST)
       if (FD_ISSET(tty.fd, &sdsetwr))
       {
-        tcflush(tty.fd, TCIOFLUSH);
-        rc = conn_write(tty.fd, tty.txbuf + tty.ptrbuf,
-                        tty.txlen - tty.ptrbuf, 1);
-        if (rc <= 0)
-        { /* error - make attempt to reinitialize serial port */
+        rc = RC_OK;
+        destination = *(tty.txbuf + tty.ptrbuf);
+        if (tty.curslave == &tty.param[destination]->tios)
+          tcflush(tty.fd, TCIOFLUSH);
+        else {
 #ifdef LOG
-          logw(0, "tty: error in write() (%s)", strerror(errno));
+          logw(5, "tty: switching termios for slave %u", destination);
 #endif
-          tty_reinit();
+          tty.curslave = &tty.param[destination]->tios;
+          rc = tty_set_attr(&tty);;
         }
+        if (rc != RC_OK) {
+#ifdef LOG
+          logw(0, "tty: error in tty_set_attr()");
+#endif
+          tty_reinit(exename);
+        }
+        else
+        {
+          rc = conn_write(tty.fd, tty.txbuf + tty.ptrbuf,
+              tty.txlen - tty.ptrbuf, 1);
+          if (rc <= 0)
+          { /* error - make attempt to reinitialize serial port */
+#ifdef LOG
+            logw(0, "tty: error in write() (%s)", strerror(errno));
+#endif
+            tty_reinit(exename);
+          }
 #ifdef DEBUG
         logw(7, "tty: written %d bytes", rc);
 #endif
+        }
         tty.ptrbuf += rc;
         if (tty.ptrbuf == tty.txlen)
         { /* request transmitting completed, switch to TTY_RESP */
@@ -575,7 +596,7 @@ conn_loop(void)
           }
           if (tty.rxlen > TTY_BUFSIZE)
             tty.rxlen = TTY_BUFSIZE;
-          tty.timer += DV(tty.rxlen, tty.speed);
+          tty.timer += DV(tty.rxlen, cfg.ttyspeed);
 #ifdef DEBUG
           logw(5, "tty: estimated %d bytes, waiting %lu usec", tty.rxlen, tty.timer);
 #endif
@@ -598,7 +619,7 @@ conn_loop(void)
 #ifdef LOG
           logw(0, "tty: error in read() (%s)", strerror(errno));
 #endif
-          tty_reinit();
+          tty_reinit(exename);
         }
 #ifdef DEBUG
           logw(7, "tty: read %d bytes", rc);
@@ -650,7 +671,7 @@ conn_loop(void)
 #ifdef LOG
           logw(0, "tty: error in read() (%s)", strerror(errno));
 #endif
-          tty_reinit();
+          tty_reinit(exename);
         }
 #ifdef DEBUG
           logw(7, "tty: dropped %d bytes", rc);
@@ -741,7 +762,13 @@ conn_loop(void)
               { /* ### packet received completely ### */
                 state_conn_set(curconn, CONN_TTY);
                 if (tty.state == TTY_READY)
+                {
+#ifdef DEBUG
+                  logw(6, "conn[%s]: destination slave is %u", 
+                     inet_ntoa(curconn->sockaddr.sin_addr), *(unsigned char *)(curconn->buf + HDRSIZE));
+#endif
                   conn_tty_start(&tty, curconn);
+                }
               }
           }
           curconn = queue_next_elem(&queue, curconn);

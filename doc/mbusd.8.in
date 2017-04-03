@@ -20,6 +20,8 @@ mbusd \- MODBUS/TCP to MODBUS/RTU gateway.
 .IR speed ]
 .RB [ -m
 .IR mode ]
+.RB [ -x
+.IR file ]
 .RB [ -P
 .IR port ]
 .RB [ -C
@@ -61,6 +63,14 @@ Specifies serial port device name.
 Specifies serial port speed.
 .IP "\fB-m \fImode\fR"
 Specifies serial port mode (like 8N1).
+.IP "\fB-x \fIfile\fR"
+Allow some slaves to use different serial settings than those given on the command line. For this purpose \fImbusd\fR reads the specified text file (eg. /etc/mbusd.ttyS0) that contains lines like the following:
+.PP
+.RS 12
+15 9600 8N1
+.RE
+.IP
+Then \fImbusd\fR will set speed at 9600 and port mode 8N1 to communicate with slave 15 only, using the settings that come with the \fB-s\fR and \fB-x\fR switches with all the other slaves. This option is useful only in a "mixed environment", actually when slaves with different serial parameters share the same physical line.
 .IP "\fB-P \fIport\fR"
 Specifies TCP port number.
 .IP "\fB-C \fImaxconn\fR"
